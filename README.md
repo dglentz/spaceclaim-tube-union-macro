@@ -9,7 +9,7 @@
 - 🖥️ **Modular and reusable code for engineering applications**
 
 ## 🛠️ How to Use?
-1️⃣ **Download the script** `1_PONTA.py` or `2_PONTAS.py`  
+1️⃣ **Download the script** `1_SIDE.py` or `2_SIDE.py`  
 2️⃣ **Run it inside SpaceClaim (ANSYS V18)**  
 3️⃣ **Follow the instructions in the [`docs/manual.pdf`](docs/manual.pdf)**  
 

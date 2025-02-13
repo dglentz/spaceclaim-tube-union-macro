@@ -1,0 +1,1673 @@
+# Python Script, API Version = V18 Beta
+import clr
+import SpaceClaim.Api.V18 as sc
+import SpaceClaim.Api.V18.Modeler as model
+import SpaceClaim.Api.V18.Geometry as geom
+clr.AddReference("System.Windows.Forms")
+from System.Windows.Forms import Application, Form, Button, Label, DialogResult, DockStyle
+from SpaceClaim.Api.V18 import *
+from SpaceClaim.Api.V18.Geometry import *
+from SpaceClaim.Api.V18.Geometry import Point
+from SpaceClaim.Api.V18 import DatumPlane
+from SpaceClaim.Api.V18.Geometry import Matrix
+from decimal import Decimal
+
+#Bibliotecas Python
+import math
+import itertools
+
+# Função que copia e cola arestas selecionadas
+def coy_and_paste_edges(selection):
+    if selection is None or not selection.GetItems[IDocObject]():
+        print("Erro: Nenhuma aresta selecionada.")
+        return None
+    
+    try:
+        result = Copy.ToClipboard(selection)
+        if not result.Success:
+            print("Erro ao copiar para a área de transferência.")
+            return None
+        
+        pastedSelection = Paste.FromClipboard()
+        if not pastedSelection:
+            print("Erro ao colar da área de transferência.")
+            return None
+        
+        return pastedSelection
+    except Exception as e:
+        print("Ocorreu um erro: " .format(e))
+        return None
+
+# Função para criar loft entre duas seleções de linhas
+def create_loft_from_pasted_edges(pastedResult1, pastedResult2):
+    if pastedResult1 is None or pastedResult2 is None:
+        print("Erro: Um ou ambos os resultados colados são nulos.")
+        return None
+    
+    try:
+        pastedObjects1 = pastedResult1.CreatedObjects
+        pastedObjects2 = pastedResult2.CreatedObjects
+        
+        if not pastedObjects1 or not pastedObjects2:
+            print("Erro: Um ou ambos os resultados colados não contêm objetos criados.")
+            return None
+        
+        combinedEdges = list(pastedObjects1) + list(pastedObjects2)
+        combinedSelection = Selection.Create(combinedEdges)
+        
+        options = LoftOptions()
+        options.GeometryCommandOptions = GeometryCommandOptions()
+        
+        result = Loft.Create(combinedSelection, None, options)
+        if not result.Success:
+            print("Erro ao criar o loft.")
+            return None
+        
+        resultBody, _ = search_last_body()
+        if resultBody is None:
+            print("Erro: Não foi possível encontrar o corpo resultante do loft.")
+            return None
+        
+        return resultBody
+    except Exception as e:
+        print("Ocorreu um erro: " .format(e))
+        return None
+
+# Função para dividir faces
+def split_faces(face1, face2):
+
+    # Verifica se ambas as faces são válidas
+    if face1 is None or face2 is None:
+        print("Erro: Ambas as faces devem ser válidas e não nulas.")
+        return None
+    
+    try:
+        options = SplitFaceOptions()
+        selection = Selection.Create(face1)
+        cutter = Selection.Create(face2)
+        
+        result = SplitFace.ByCutter(selection, cutter, options)
+        if not result.Success:
+            print("Erro ao dividir as faces.")
+            return None
+        
+        return result
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: ".format(e))
+        return None
+
+#Função de extração das 2 ultimas faces de um corpo
+def extract_last_face(body):
+    try:
+        # Verifica se o objeto é uma instância de DesignBody
+        if not isinstance(body, DesignBody):
+            raise TypeError("O objeto fornecido não é um DesignBody.")
+
+        # Obtém as faces do corpo
+        extract_face = body.Faces
+
+        # Verifica se há pelo menos duas faces
+        if extract_face.Count < 2:
+            raise ValueError("O corpo deve ter pelo menos duas faces.")
+
+        # Extrai as duas últimas faces
+        out_face1 = extract_face[-1]
+        out_face2 = extract_face[-2]
+
+        return out_face1, out_face2
+
+    except TypeError as te:
+        print("Erro de Tipo: ".format(te))
+        return None, None
+
+    except ValueError as ve:
+        print("Erro de Valor: ".format(ve))
+        return None, None
+
+    except Exception as e:
+        print("Erro inesperado: ".format(e))
+        return None, None
+    
+# Função busca ultimo corpo e curvas resultantes
+def search_last_body():
+    try:
+        rootPart = GetRootPart()
+        allBodies = rootPart.Bodies
+        allCurves = rootPart.Curves
+        bodyOut = None
+
+        # Verifica se há corpos na lista
+        if len(allBodies) > 0:
+            bodyOut = allBodies[-1]
+
+        return bodyOut, allCurves
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos do rootPart: {}".format(ae))
+        return None, None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None, None
+
+# Fatiar corpos por plano       
+def cut_body_by_plan(bodyIn, plan):
+    try:
+        selection = Selection.Create(bodyIn)
+        datum = Selection.Create(plan)
+        result = SplitBody.ByCutter(selection, datum)
+
+        bodyOut, _ = search_last_body()
+
+        if bodyOut is None:
+            raise ValueError("Nenhum corpo foi encontrado após a divisão.")
+
+        # Mede o comprimento das arestas dos tubos
+        distEdgebodyOut = get_longest_edge_length(bodyOut)
+        distEdgebodyIn = get_longest_edge_length(bodyIn)
+
+        if distEdgebodyIn > distEdgebodyOut:
+            bodyToRemove = bodyOut
+            bodyFinal = bodyIn
+        else:
+            bodyToRemove = bodyIn
+            bodyFinal = bodyOut
+
+        selection = Selection.Create(bodyToRemove)
+        result = Combine.RemoveRegions(selection)
+
+        return bodyFinal
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para criar um plano com base em uma face
+def create_plane_from_face(face, faceDirection,offSet):
+    try:
+        createPlane = None
+        # Cria coleção de planos resultantes
+        selection = Selection.Create(face)
+        plane = DatumPlaneCreator.Create(selection, False, None)
+        
+        # Converte coleção em datumplane
+        colectionPlane = plane.GetCreated[DatumPlane]()
+        if not colectionPlane:
+            raise ValueError("Nenhum DatumPlane foi criado.")
+        
+        docPlane = colectionPlane[0]
+        if isinstance(docPlane, DatumPlane):
+            createPlane = docPlane
+
+        # Definir a direção com base no parâmetro faceDirection
+        direction_map = {
+            "-X": -Direction.DirX,
+            "+X": Direction.DirX,
+            "+Y": Direction.DirY,
+            "-Y": -Direction.DirY,
+            "+Z": Direction.DirZ,
+            "-Z": -Direction.DirZ
+        }
+        
+        # Verifica se a direção fornecida é válida
+        direction = direction_map.get(faceDirection)
+        if direction is None:
+            raise ValueError("Direção inválida fornecida: {}".format(faceDirection))
+        
+        # Seleciona plano criado e desloca para direção informada 
+        selection2 = Selection.Create(createPlane)
+        options = MoveOptions()
+        result = Move.Translate(selection2, direction, MM(offSet), options)
+        
+        # Encontra o centro geométrico do plano
+        createPlaneCenter = createPlane.Shape.Geometry.Frame.Origin
+        
+        return createPlane, createPlaneCenter
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None, None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None, None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None, None
+
+# Função pata medir distancia minima entre duas faces
+def minimum_dist_between_faces(face1, face2):
+    try:
+        dist = MeasureHelper.MinDistanceBetweenObjects(face1, face2)
+        if dist is not None:
+            minDist = dist.Distance
+        else:
+            minDist = 0
+        return minDist
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para medir angulo entre duas faces
+def angle_between_two_faces(face1, face2):
+    try:
+        normal1 = face1.GetFaceNormal(0, 0)
+        normal2 = face2.GetFaceNormal(0, 0)
+        
+        # Calcular o produto escalar das normais
+        dotProduct = normal1.X * normal2.X + normal1.Y * normal2.Y + normal1.Z * normal2.Z
+        
+        # Calcular as magnitudes das normais
+        magnitude1 = math.sqrt(normal1.X**2 + normal1.Y**2 + normal1.Z**2)
+        magnitude2 = math.sqrt(normal2.X**2 + normal2.Y**2 + normal2.Z**2)
+        
+        # Calcular o cosseno do ângulo
+        cosAngle = dotProduct / (magnitude1 * magnitude2)
+        
+        cosAngle = max(min(cosAngle, 1), -1)
+        
+        # Calcular o ângulo em radianos
+        angleRadians = math.acos(cosAngle)
+        
+        # Converter o ângulo para graus
+        angleDegrees = round(math.degrees(angleRadians), 0)
+        
+        return angleDegrees
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except ZeroDivisionError as zde:
+        print("Ocorreu um erro de divisão por zero: {}".format(zde))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+    
+# Função para extração de arestas de uma face    
+def get_edges_of_face(face):
+    try:
+        edges = face.Edges
+        if edges is None:
+            raise ValueError("Nenhuma aresta encontrada na face fornecida.")
+        return list(edges)  # Certifique-se de que edges seja uma lista
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return []
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return []
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return []
+
+# Função para criar um dicionário da face e suas arestas
+def store_edges_by_face(faces):
+    faceEdgesDict = {}
+    try:
+        for face in faces:
+            edges = get_edges_of_face(face)
+            if edges is None:
+                raise ValueError("Nenhuma aresta encontrada para a face fornecida.")
+            faceEdgesDict[face] = edges
+        return faceEdgesDict
+
+    except TypeError as te:
+        print("Ocorreu um erro de tipo: {}".format(te))
+        return None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para calcular comprimento da aresta
+def calculate_edge_length(edge):
+    try:
+        edgeIn = None
+        if isinstance(edge, DesignEdge):
+            edgeIn = edge
+        else:
+            raise TypeError("O objeto fornecido não é um DesignEdge.")
+        
+        return edgeIn.Shape.Length
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except TypeError as te:
+        print("Ocorreu um erro de tipo: {}".format(te))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para combinar dois corpos
+def combine_body(body1, body2):
+    try:
+        # Verificar se ambos os corpos são instâncias de DesignBody
+        if not isinstance(body1, DesignBody) or not isinstance(body2, DesignBody):
+            raise ValueError("Ambos os corpos devem ser instâncias de DesignBody.")
+        
+        # Criar seleções para os corpos
+        targets = Selection.Create(body1)
+        tools = Selection.Create(body2)
+        options = MakeSolidsOptions()
+        options.KeepCutter = False
+        options.MakeAllRegions = True
+        result = Combine.Intersect(targets, tools, options)
+        
+        return result
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para extrair centro geométrico do corpo
+def center_body_point(body):
+    try:
+        boundingBox = body.Shape.GetBoundingBox(Matrix.Identity)
+        bodyCenter = boundingBox.Center
+        if isinstance(bodyCenter,Point):
+            return bodyCenter
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para medir dois pontos
+def dist_between_two_points(point1, point2):
+    try:
+        dist = math.sqrt((point1.X - point2.X)**2 + (point1.Y - point2.Y)**2 + (point1.Z - point2.Z)**2)
+        return dist
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para calcular a área de uma face
+def calculate_area_of_face(face):
+    try:
+        area = face.Area
+        return area
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função de extação do centroide dos vértices
+def centroid_vertices(vertices):
+    try:
+        if not vertices:
+            raise ValueError("A lista de vértices está vazia.")
+        
+        xCoords = [v.X for v in vertices]
+        yCoords = [v.Y for v in vertices]
+        zCoords = [v.Z for v in vertices]
+        
+        centroideX = sum(xCoords) / len(vertices)
+        centroideY = sum(yCoords) / len(vertices)
+        centroideZ = sum(zCoords) / len(vertices)
+        
+        centroidPoint = Point.Create(centroideX, centroideY, centroideZ)
+
+        return centroidPoint
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função de extração dos vértices de uma face
+def extract_face_vertex(face):
+    try:
+        listVertex = []
+        listEdges = []
+        if isinstance(face, DesignFace):
+            faceExtractEdges = face.Edges
+            for edge in faceExtractEdges:
+                if isinstance(edge, DesignEdge):
+                    listEdges.append(edge)
+                    vertices = extract_edge_vertex(edge)
+                    for vertex in vertices:
+                        if vertex not in listVertex:
+                            listVertex.append(vertex)
+        else:
+            raise TypeError("O objeto fornecido não é um DesignFace.")
+        
+        return listVertex, listEdges
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None, None
+
+    except TypeError as te:
+        print("Ocorreu um erro de tipo: {}".format(te))
+        return None, None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None, None
+
+# Função de extração da lista de vértives de uma aresta
+def extract_edge_vertex(edge):
+    try:
+        listVertex = []
+        startVertex = edge.Shape.StartVertex
+        endVertex = edge.Shape.EndVertex
+        
+        if startVertex.Position not in listVertex:
+            listVertex.append(startVertex.Position)
+        if endVertex.Position not in listVertex:
+            listVertex.append(endVertex.Position)
+        
+        return listVertex
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função que extrai os 8 vértices das extremidades de um tubo quadrado e suas arestas 
+def extract_vertices_from_body(body):
+    centerOfBody = center_body_point(body)
+    vertices = []
+    edges = []
+    
+    # Verifica se o corpo tem faces
+    if not body.Faces:
+        print("Erro: O corpo não tem faces.")
+        return [], []
+    
+    for face in body.Faces:
+        faceVertices, faceEdges = extract_face_vertex(face)
+        
+        # Verifica se a função extract_face_vertex está retornando vértices e arestas
+        if not faceVertices:
+            print("Ocorreu um erro: {}".format(faceVertices))
+        if not faceEdges:
+            print("Ocorreu um erro: {}".format(faceEdges))
+        
+        for vertex in faceVertices:
+            if vertex not in vertices:
+                vertices.append(vertex)
+        for edge in faceEdges:
+            if edge not in edges:
+                edges.append(edge)
+    
+    # Verifica se a lista de vértices está vazia
+    if not vertices:
+        print("Erro: Nenhum vértice foi encontrado.")
+        return [], []
+    
+    # Encontra os 8 vértices mais distantes do centro do corpo
+    try:
+        vertices.sort(key=lambda v: (v.Position - centerOfBody).Magnitude, reverse=True)
+    except Exception as e:
+        print("Ocorreu um erro: {}".format(e))
+        return [], []
+    
+    vertices = remove_duplicate_vertices(vertices)
+    # Seleciona os 8 vértices mais distantes
+    farthestVertices = vertices[:8]
+    
+    return farthestVertices, edges
+
+# Função para encontrar o ponto central de uma aresta
+def edge_midpoint(edge):
+    try:
+        startPoint = edge.Shape.StartPoint
+        endPoint = edge.Shape.EndPoint
+        
+        midX = (startPoint.X + endPoint.X) / 2
+        midY = (startPoint.Y + endPoint.Y) / 2
+        midZ = (startPoint.Z + endPoint.Z) / 2
+        
+        return Point.Create(midX, midY, midZ)
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para encontrar direção da normal
+def normal_direction(normal):
+    try:
+        dirX = normal.X
+        dirY = normal.Y
+        dirZ = normal.Z
+        
+        # Comparar as magnitudes absolutas das componentes para determinar o eixo dominante
+        if abs(dirX) >= abs(dirY) and abs(dirX) >= abs(dirZ):
+            if dirX > 0:
+                return "+X"
+            else:
+                return "-X"
+        elif abs(dirY) >= abs(dirX) and abs(dirY) >= abs(dirZ):
+            if dirY > 0:
+                return "+Y"
+            else:
+                return "-Y"
+        elif abs(dirZ) >= abs(dirX) and abs(dirZ) >= abs(dirY):
+            if dirZ > 0:
+                return "+Z"
+            else:
+                return "-Z"
+        else:
+            return "Indeterminado"
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return "Erro"
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return "Erro"
+
+# Função para ordenar sequencia de 4 arestas por compartilhamento de vértices    
+def sort_by_vertex_share(edges):
+    try:
+        # Converte o Array[DesignEdge] para uma lista Python
+        edges = list(edges)
+        if not edges:
+            print("Erro: A lista de arestas está vazia.")
+            return None
+        ordered_edges = []
+        # Inicia a lista ordenada com a primeira aresta
+        ordered_edges.append(edges[0])
+
+        # Continua enquanto houver arestas restantes
+        while edges:
+            last_edge = ordered_edges[-1]
+            last_end_vertex = last_edge.Shape.EndVertex
+            # Tenta encontrar a próxima aresta conectada ao último vértice da última aresta
+            found = False
+            for i, edge in enumerate(edges):
+                if edge.Shape.StartVertex == last_end_vertex or edge.Shape.EndVertex == last_end_vertex:
+                    # Se a próxima aresta for encontrada, adiciona e remove da lista de arestas restantes
+                    ordered_edges.append(edges.pop(i))
+                    found = True
+                    break
+            # Se nenhuma aresta foi encontrada, inverte a busca para conectar no vértice inicial da última aresta
+            if not found:
+                last_start_vertex = last_edge.Shape.StartVertex
+                for i, edge in enumerate(edges):
+                    if edge.Shape.StartVertex == last_start_vertex or edge.Shape.EndVertex == last_start_vertex:
+                        ordered_edges.append(edges.pop(i))
+                        found = True
+                        break
+ 
+            # Se não encontrou uma aresta conectada em nenhum dos vértices, termina a função com erro
+            if not found:
+                print("Erro: Não foi possível ordenar todas as arestas de forma sequencial.")
+                return None
+ 
+        return ordered_edges
+    except Exception as e:
+        print("Erro: {}".format(e))
+        return None
+       
+# Função para medir distância entre vértices
+def distance_between_vertices(v1, v2):
+    try:
+        dist = math.sqrt((v1.X - v2.X)**2 + (v1.Y - v2.Y)**2 + (v1.Z - v2.Z)**2)
+        return dist
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função que soma a distancia entre todos os vérices
+def total_distance(vertices):
+    try:
+        if not vertices:
+            raise ValueError("A lista de vértices está vazia.")
+        
+        totalDist = sum(distance_between_vertices(v1, v2) for v1, v2 in itertools.combinations(vertices, 2))
+        return totalDist
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para remover vértices próximos
+def remove_duplicate_vertices(vertices, tolerance=1e-2):
+    try:
+        if not vertices:
+            raise ValueError("A lista de vértices está vazia.")
+        
+        uniqueVertices = []
+        for vertex in vertices:
+            if not any(abs(vertex.X - v.X) < tolerance and 
+                       abs(vertex.Y - v.Y) < tolerance and 
+                       abs(vertex.Z - v.Z) < tolerance for v in uniqueVertices):
+                uniqueVertices.append(vertex)
+
+        return uniqueVertices
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para encontrar os 4 vértices das duas extremidades de um tubo quadrado
+def separate_end_vertices(vertices):
+    # Remove vértices duplicados
+    vertices = remove_duplicate_vertices(vertices)
+    
+    # Encontrar os 4 vértices com a menor distância total entre eles
+    endVertices1 = min(itertools.combinations(vertices, 4), key=total_distance)
+    
+    # Remover os vértices encontrados da lista original
+    remainingVertices = [v for v in vertices if v not in endVertices1]
+    
+    # Encontrar os 4 vértices restantes com a menor distância total entre eles
+    endVertices2 = min(itertools.combinations(remainingVertices, 4), key=total_distance)
+    
+    return list(endVertices1), list(endVertices2)
+
+# Função para criar face com quatro arestas
+def create_surface_from_edges(edges):
+    try:
+        
+        # Cria uma seleção a partir das arestas
+        selection = Selection.Create(edges)
+        
+        # Define as opções de loft
+        options = LoftOptions()
+        options.GeometryCommandOptions = GeometryCommandOptions()
+        options.ExtrudeType = ExtrudeType.ForceIndependent
+        
+        # Cria a superfície usando Loft
+        result = Loft.Create(selection, None, options)
+        
+        # Obtém a face criada
+        colectionFece = result.GetCreated[DesignFace]()
+        faceExtract = colectionFece[0]
+        
+        return faceExtract
+    except Exception as e:
+        print("Ocorreu um erro: {}".format(e))
+        return None
+
+# Função para encontrar arestas equivalentes aos vértices
+def find_edges_for_vertices(vertices, edges, onCreate):
+    try:
+        if not vertices:
+            raise ValueError("A lista de vértices está vazia.")
+        if not edges:
+            raise ValueError("A lista de arestas está vazia.")
+        
+        relevantEdges = []
+        for edge in edges:
+            edgeVertices = extract_edge_vertex(edge)
+            if edgeVertices is None:
+                raise ValueError("Falha ao extrair vértices da aresta.")
+            if all(vertex in vertices for vertex in edgeVertices):
+                relevantEdges.append(edge)
+               
+        if len(relevantEdges) == 3 and onCreate == True:
+            # Encontrar as duas arestas opostas
+            edge1, edge2, edge3 = relevantEdges
+            if not (edge1.Shape.StartVertex in [edge2.Shape.StartVertex, edge2.Shape.EndVertex] or
+                    edge1.Shape.EndVertex in [edge2.Shape.StartVertex, edge2.Shape.EndVertex]):
+                relevantEdges = [edge1, edge2]
+            elif not (edge1.Shape.StartVertex in [edge3.Shape.StartVertex, edge3.Shape.EndVertex] or
+                      edge1.Shape.EndVertex in [edge3.Shape.StartVertex, edge3.Shape.EndVertex]):
+                relevantEdges = [edge1, edge3]
+            else:
+                relevantEdges = [edge2, edge3]
+        
+        if len(relevantEdges) not in [2, 4] and onCreate == True:
+            return []
+      
+        return relevantEdges
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para criar faces de fechamento em um corpo quadrado
+def create_close_body_faces(body,onCreate):
+    try:
+        # Extrai Lista de vértices e arestas dos corpos
+        oListVerticesBody, oListEdgesBody = extract_vertices_from_body(body)
+        if oListVerticesBody is None or oListEdgesBody is None:
+            raise ValueError("Falha ao extrair vértices ou arestas do corpo.")
+
+        # Extrai lista de vértices das pontas
+        oVerticesBodySide1, oVerticesBodySide2 = separate_end_vertices(oListVerticesBody)
+        
+        
+        
+        if oVerticesBodySide1 is None or oVerticesBodySide2 is None:
+            raise ValueError("Falha ao separar vértices das extremidades.")
+
+        # Extrai os edges das extremidades do tubo
+        relevantEdgesSide1 = find_edges_for_vertices(oVerticesBodySide1, oListEdgesBody,onCreate)
+        relevantEdgesSide2 = find_edges_for_vertices(oVerticesBodySide2, oListEdgesBody,onCreate)
+        if relevantEdgesSide1 is None or relevantEdgesSide2 is None:
+            raise ValueError("Falha ao encontrar arestas relevantes para os vértices.")
+        
+        faceSideList = []
+        if onCreate == True:
+            # Cria a face de fechamento na extremidade do tubo
+            faceExtractSide1 = create_surface_from_edges(relevantEdgesSide1)
+            faceExtractSide2 = create_surface_from_edges(relevantEdgesSide2)
+            
+            # Testa as faces válidas para lista de comparação
+
+
+            if faceExtractSide1 is not None: 
+                faceSideList.append(faceExtractSide1)
+            if faceExtractSide2 is not None: 
+                faceSideList.append(faceExtractSide2)
+            
+            return faceSideList
+        elif onCreate == False:
+            return relevantEdgesSide1,relevantEdgesSide2
+        
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função calcula a maior aresta do corpo
+def get_longest_edge_length(body):
+    try:
+        faces = body.Faces
+        if faces is None:
+            raise ValueError("O corpo não possui faces.")
+
+        faceEdgesDict = store_edges_by_face(faces)
+        if faceEdgesDict is None:
+            raise ValueError("Falha ao armazenar arestas por face.")
+
+        maxLength = 0
+        for edges in faceEdgesDict.values():
+            for edge in edges:
+                length = calculate_edge_length(edge)
+                if length is None:
+                    raise ValueError("Falha ao calcular o comprimento da aresta.")
+                if length > maxLength:
+                    maxLength = length
+
+        return maxLength
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função encontra entre 2 faces a mais proxima em relação a uma lista de faces
+def find_closest_or_furthest_face(face1, face2, closeFacesList, return_closest):
+    try:
+        # Calcular a área das faces
+        areaFace1 = calculate_area_of_face(face1)
+        areaFace2 = calculate_area_of_face(face2)
+        if areaFace1 is None or areaFace2 is None:
+            raise ValueError("Falha ao calcular a área das faces.")
+
+        # Calcular o ponto central das faces            
+        findFaceVertex1, findFaceEdgeList1 = extract_face_vertex(face1)            
+        centroidFacePoint1 = centroid_vertices(findFaceVertex1)
+        findFaceVertex2, findFaceEdgeList2 = extract_face_vertex(face2)            
+        centroidFacePoint2 = centroid_vertices(findFaceVertex2)
+        if centroidFacePoint1 is None or centroidFacePoint2 is None:
+            raise ValueError("Falha ao calcular o ponto central das faces.")
+
+        # Inicializar variáveis para armazenar a face mais próxima ou mais distante e a diferença de área
+        target_face = None
+        target_distance = float('inf') if return_closest else float('-inf')
+        
+        for closeFace in closeFacesList:
+            # Calcular o ponto central da face de fechamento
+            findFaceVertex, findFaceEdgeList = extract_face_vertex(closeFace)            
+            centroidCloseFacePoint = centroid_vertices(findFaceVertex)
+            if centroidCloseFacePoint is None:
+                raise ValueError("Falha ao calcular o ponto central da face de fechamento.")
+        
+            # Calcular a distância entre os pontos centrais
+            distanceToFace1 = dist_between_two_points(centroidFacePoint1, centroidCloseFacePoint)
+            distanceToFace2 = dist_between_two_points(centroidFacePoint2, centroidCloseFacePoint)
+            if distanceToFace1 is None or distanceToFace2 is None:
+                raise ValueError("Falha ao calcular a distância entre os pontos centrais.")
+            
+            # Calcular a diferença de área
+            areaDiff1 = abs(areaFace1 - closeFace.Area)
+            areaDiff2 = abs(areaFace2 - closeFace.Area)
+            
+            # Verificar se a face 3 é mais próxima ou mais distante e tem uma área mais próxima
+            if return_closest:
+                if areaDiff1 < target_distance or (areaDiff1 == target_distance and distanceToFace1 < target_distance):
+                    target_face = face1
+                    target_distance = distanceToFace1
+                if areaDiff2 < target_distance or (areaDiff2 == target_distance and distanceToFace2 < target_distance):
+                    target_face = face2
+                    target_distance = distanceToFace2
+            else:
+                if areaDiff1 > target_distance or (areaDiff1 == target_distance and distanceToFace1 > target_distance):
+                    target_face = face1
+                    target_distance = distanceToFace1
+                if areaDiff2 > target_distance or (areaDiff2 == target_distance and distanceToFace2 > target_distance):
+                    target_face = face2
+                    target_distance = distanceToFace2
+        
+        return target_face
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None
+
+# Função para ordenar da aresta mais proxima a mais distante em relação a um ponto   
+def sort_edges_by_distance(edges, referencePoint):
+    # Verificação de entradas nulas ou vazias
+    if edges is None or referencePoint is None:
+        raise ValueError("edges e referencePoint não podem ser nulos.")
+    if not edges:
+        raise ValueError("A lista de edges não pode estar vazia.")
+    
+    # Verificação de tipos
+    if not isinstance(edges, list):
+        raise TypeError("edges deve ser uma lista.")
+    # Aqui você pode adicionar uma verificação mais específica para referencePoint, dependendo do tipo esperado
+
+    edgeDistances = []
+    try:
+        for edge in edges:
+            midpoint = edge_midpoint(edge)
+            distance = dist_between_two_points(midpoint, referencePoint)
+            edgeDistances.append((edge, distance))
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+    
+    # Ordenar as arestas pela distância ao ponto de referência usando um processo manual
+    try:
+        for i in range(len(edgeDistances)):
+            minIndex = i
+            for j in range(i + 1, len(edgeDistances)):
+                if edgeDistances[j][1] < edgeDistances[minIndex][1]:
+                    minIndex = j
+            edgeDistances[i], edgeDistances[minIndex] = edgeDistances[minIndex], edgeDistances[i]
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+    
+    return [edge for edge, distance in edgeDistances]
+
+# Função para extrair arestas de um corpo mais proximas de um ponto
+def extract_closest_edges(body, referencePoint):
+    # Verificação de entradas nulas ou vazias
+    if body is None or referencePoint is None:
+        raise ValueError("body e referencePoint não podem ser nulos.")
+    
+    # Verificação de atributos e tipos
+    if not hasattr(body, 'Faces'):
+        raise TypeError("body deve ter o atributo 'Faces'.")
+    # Aqui você pode adicionar uma verificação mais específica para referencePoint, dependendo do tipo esperado
+
+    edges = []
+    try:
+        for face in body.Faces:
+            for edge in face.Edges:
+                if edge not in edges:
+                    edges.append(edge)
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+    
+    # Ordenar as arestas pela distância ao ponto de referência
+    try:
+        sortedEdges = sort_edges_by_distance(edges, referencePoint)
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+    
+    # Retornar as 4 arestas mais próximas
+    closestEdges = sortedEdges[:4]
+    
+    return closestEdges
+
+# Função de extração do centro da face
+def extrac_face_center(face):
+    try:
+        faceGapVertex, faceGapEdgeList = extract_face_vertex(face)        
+        facesBodyCenter = centroid_vertices(faceGapVertex)
+        return facesBodyCenter
+    
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao extrair o centro das faces: {}".format(e))
+        return None
+        
+#Função para encontrar face mais próxima ou mais distante centro de duas faces em relação a outra
+def find_near_close_face(face1, face2, referenceFace, MinOrMax):
+    try:
+        # MinOrMax = True retorna mais próxima
+        # MinOrMax = False retorna mais distante
+        
+        # Extrair o centro da face de referência
+        centerReference = extrac_face_center(referenceFace)
+        
+        # Projetar o ponto central da face de referência nas faces face1 e face2
+        pointProject1 = face1.Shape.ProjectPoint(centerReference)
+        pointProject2 = face2.Shape.ProjectPoint(centerReference)
+        
+        # Obter os pontos projetados
+        centerFace1 = pointProject1.Point
+        centerFace2 = pointProject2.Point
+
+        # Extrair o centro da face de referência novamente (parece redundante, mas mantendo conforme o original)
+        centerFaceCloseBody = extrac_face_center(referenceFace)
+        
+        # Calcular as distâncias entre os pontos centrais projetados e o centro da face de referência
+        distGapCenterFace1 = dist_between_two_points(centerFace1, centerFaceCloseBody)
+        distGapCenterFace2 = dist_between_two_points(centerFace2, centerFaceCloseBody)
+        
+        # Determinar qual face retornar com base nas distâncias e no valor de MinOrMax
+        if (distGapCenterFace1 > distGapCenterFace2 and MinOrMax) or (distGapCenterFace1 < distGapCenterFace2 and not MinOrMax):
+            return face2
+        elif (distGapCenterFace2 > distGapCenterFace1 and MinOrMax) or (distGapCenterFace2 < distGapCenterFace1 and not MinOrMax):
+            return face1
+        else:
+            # Se as distâncias forem iguais, retornar uma das faces (aqui escolhemos face1 por padrão)
+            return face1
+        
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None
+
+    except Exception as e:
+        print("Ocorreu um erro ao encontrar face: {}".format(e))
+        return None
+  
+#Função para ordenar dicionario manualmente 
+def manual_sort_dict_by_value(dictionary):
+    items = list(dictionary.items())
+    try:
+        for i in range(len(items)):
+            minIndex = i
+            for j in range(i + 1, len(items)):
+                if items[j][1] < items[minIndex][1]:
+                    minIndex = j
+            items[i], items[minIndex] = items[minIndex], items[i]
+        return items
+    except Exception as e:
+        print("Ocorreu um erro ao ordenar: {}".format(e))
+    return None
+
+# Função auxiliar para obter o comprimento da aresta
+def get_length(edge):
+        
+    return edge.Shape.Length
+        
+# Função para ordemar arestas
+def sort_edges(edges, descending=True):
+    """
+    Ordena uma lista de arestas manualmente.
+    
+    :param edges: Lista de arestas a serem ordenadas.
+    :param descending: Se True, ordena do maior para o menor. Se False, ordena do menor para o maior.
+    :return: Lista de arestas ordenadas.
+    """
+    
+    # Implementação da ordenação manual (Bubble Sort)
+    n = len(edges)
+    for i in range(n):
+        for j in range(0, n-i-1):
+            if (descending and get_length(edges[j]) < get_length(edges[j+1])) or \
+               (not descending and get_length(edges[j]) > get_length(edges[j+1])):
+                # Troca as arestas
+                edges[j], edges[j+1] = edges[j+1], edges[j]
+    
+    return edges         
+
+def find_disconnected_and_connected_faces(faces):
+    disconnected_faces = []
+    face_vertices_map = {face: get_face_vertices(face) for face in faces}
+    for i, (face1, vertices_face1) in enumerate(face_vertices_map.items()):
+        for j, (face2, vertices_face2) in enumerate(face_vertices_map.items()):
+            if i >= j: 
+                continue
+            if vertices_face1.isdisjoint(vertices_face2):  
+                disconnected_faces = [face1, face2]
+                break
+        if disconnected_faces:
+            break
+    connected_face = None
+    for face, vertices in face_vertices_map.items():
+        if face not in disconnected_faces:
+            connected_face = face
+            break
+    widths = [calculate_face_width(face) for face in disconnected_faces]
+    return disconnected_faces, connected_face, widths
+ 
+ # Função para encontrar os vérices de uma face 
+def get_face_vertices(face):
+    vertices = []
+    try:
+        for edge in face.Edges:
+            edge_vertices = extract_edge_vertex(edge)  
+            for vertex in edge_vertices:
+                vertices.append((vertex.X, vertex.Y, vertex.Z))
+        return set(vertices) 
+    except Exception as e:
+        print("Ocorreu um erro ao extrair os vértices da face: {}".format(e))
+        return set()  
+ 
+ # Função que retorna largura e comprimento da face
+def calculate_face_width(face):
+    try:
+        vertices = list(get_face_vertices(face)) 
+        max_distance = 0
+        for i, v1 in enumerate(vertices):
+            for j, v2 in enumerate(vertices):
+                if i >= j:
+                    continue
+                distance = math.sqrt((v1[0] - v2[0])**2 + (v1[1] - v2[1])**2 + (v1[2] - v2[2])**2)
+                if distance > max_distance:
+                    max_distance = distance
+        return max_distance
+    except Exception as e:
+        print("Erro ao calcular a largura da face: {}".format(e))
+        return None
+    
+# Função que retorna aresta não compartilhada pelas faces
+def find_non_shared_edge(face1, face2):
+    try:
+        vertices1 = get_face_vertices(face1)
+        for edge in face2.Edges:
+            edge_vertices = extract_edge_vertex(edge)
+            edge_vertex_coords = {(vertex.X, vertex.Y, vertex.Z) for vertex in edge_vertices}
+            if not edge_vertex_coords & vertices1:  # Verifica se não há vértices compartilhados
+                return edge
+        return None
+    except Exception as e:
+        print("Erro ao encontrar a aresta não compartilhada: {}".format(e))
+        return None
+    
+# Função retonra o ponto médio de uma aresta
+def get_edge_midpoint(edge):
+    vertices = extract_edge_vertex(edge)
+    if len(vertices) == 2:
+        v1, v2 = vertices
+        midpoint = ((v1.X + v2.X) / 2, (v1.Y + v2.Y) / 2, (v1.Z + v2.Z) / 2)
+        return midpoint
+    else:
+        print("Aresta não possui exatamente dois vértices.")
+        return None
+
+# Função retorna as dimensões de uma face
+def calculate_face_dimensions_with_measure_helper_old(face):
+    try:
+        #result = FixSplitEdges.FindAndFix()
+        edges = list(face.Edges)
+        min_width = float('inf')
+        min_height = float('inf')
+        tolerance = (0.01)/1000  # Tolerância para descartar distâncias próximas a zero
+        
+        for i, edge1 in enumerate(edges):
+            for j, edge2 in enumerate(edges):
+                if i >= j:
+                    dist = MeasureHelper.MinDistanceBetweenObjects(edge1, edge2)
+                    dist = dist.Distance
+                    if dist > tolerance:
+                        if dist < min_width:
+                            min_width = dist
+                        if dist < min_height:
+                            min_height = dist
+        
+        if min_width == float('inf'):
+            min_width = None
+        if min_height == float('inf'):
+            min_height = None
+        
+        return min_width, min_height
+    except Exception as e:
+        print("Erro ao calcular as dimensões da face: {}".format(e))
+        return None, None
+  
+    
+def calculate_face_dimensions_with_edge_distances(face):
+    """
+    Calcula as duas maiores distâncias não repetidas entre arestas que não compartilham vértices.
+ 
+    Args:
+        face: DesignFace - A face cuja geometria será analisada.
+ 
+    Returns:
+        tuple: (maior_distância, segunda_maior_distância) ou None se não aplicável.
+    """
+    try:
+        # Extração das arestas da face
+        edges = list(face.Edges)
+        if len(edges) < 2:
+            raise ValueError("A face precisa ter pelo menos 2 arestas para calcular dimensões.")
+ 
+        # Identificação de pares de arestas que não compartilham vértices
+        non_sharing_edge_pairs = []
+        for i in range(len(edges)):
+            for j in range(i + 1, len(edges)):
+                edge1_vertices = set(
+                    (v.X, v.Y, v.Z) for v in extract_edge_vertex(edges[i])
+                )
+                edge2_vertices = set(
+                    (v.X, v.Y, v.Z) for v in extract_edge_vertex(edges[j])
+                )
+                # Verifica se as arestas não compartilham vértices
+                if edge1_vertices.isdisjoint(edge2_vertices):
+                    non_sharing_edge_pairs.append((edges[i], edges[j]))
+ 
+        if not non_sharing_edge_pairs:
+            raise ValueError("Não há pares de arestas que não compartilhem vértices na face.")
+            return None, None
+ 
+        # Cálculo das distâncias entre pares de arestas
+        distances = []
+        for edge1, edge2 in non_sharing_edge_pairs:
+            min_distance = float("inf")
+            for v1 in extract_edge_vertex(edge1):
+                for v2 in extract_edge_vertex(edge2):
+                    distance = distance_between_vertices(v1, v2)
+                    if distance < min_distance:
+                        min_distance = distance
+            distances.append(min_distance)
+ 
+        # Ordenar distâncias e remover duplicatas
+        unique_distances = sorted(set(distances), reverse=True)
+ 
+        if len(unique_distances) < 2:
+            raise ValueError("Menos de duas distâncias únicas encontradas.")
+ 
+        # Retornar as duas maiores distâncias únicas
+        return unique_distances[0], unique_distances[1]
+ 
+    except Exception as e:
+        print("Erro ao calcular as dimensões da face: {}".format(e))
+        return None, None
+
+# Função que corta a face de um corpo
+def extra_cut_first(body, faceClosed, limitCutFace):
+    most_distant_edge = None
+    try:
+        resultFaceInicial1, resultFaceInicial2 = extract_last_face(body)
+        startIDFace1 = resultFaceInicial1.ExportIdentifier
+        startIDFace2 = resultFaceInicial2.ExportIdentifier
+    
+        centerFaceInicial1 = extrac_face_center(resultFaceInicial1)
+        centerFaceInicial2 = extrac_face_center(resultFaceInicial2)
+        
+        listFaces = []
+        listFacesEdgesCenter = []
+        listFaces.append(resultFaceInicial1)
+        listFaces.append(resultFaceInicial2)
+        
+        for faces in listFaces:
+            for edges in faces.Edges:
+                listFacesEdgesCenter.append(edge_midpoint(edges))
+    
+        ofaceGap = find_near_close_face(resultFaceInicial1, resultFaceInicial2, faceClosed, True)
+        result = split_faces(ofaceGap, limitCutFace)
+        resultFaceOut1, resultFaceOut2 = extract_last_face(body)
+        ofaceToMeassureEdge = find_near_close_face(resultFaceOut1, resultFaceOut2, faceClosed, True)
+        if len(ofaceToMeassureEdge.Edges) >4:
+            oSelect = Selection.Create(ofaceToMeassureEdge)
+            result = FixSplitEdges.FindAndFix(oSelect)
+            
+        if startIDFace1 != resultFaceOut1.ExportIdentifier and startIDFace2 != resultFaceOut2.ExportIdentifier:
+            
+            ofaceToMeassureEdge = find_near_close_face(resultFaceOut1, resultFaceOut2, faceClosed, False)
+            print("oi")
+            width, height = calculate_face_dimensions_with_edge_distances(ofaceToMeassureEdge)
+            oListOfEdge2 = get_edges_of_face(ofaceToMeassureEdge)
+            if (width < 0.004 or height < 0.004) or (width == None or height == None) :
+                try:
+                    index = 0
+                    while index < len(oListOfEdge2):
+                        edge = oListOfEdge2[index]
+                        centerEdge = edge_midpoint(edge)
+                        contCEnter = 0
+                        for centerEdgeStart in listFacesEdgesCenter:
+                            if centerEdgeStart == centerEdge:
+                                contCEnter = 1
+                        selection = Selection.Create(edge)
+                        if contCEnter == 0:
+                            Delete.Execute(selection)
+                            resultFaceOut1, resultFaceOut2 = extract_last_face(body)
+                            ofaceToMeassureEdge = find_near_close_face(resultFaceOut1, resultFaceOut2, faceClosed, False)
+                            # Atualiza a lista original
+                            oListOfEdge2 = get_edges_of_face(ofaceToMeassureEdge)
+                            # Reinicia o índice para reavaliar a lista atualizada
+                            index = 0
+                        else:
+                            index += 1
+                        
+                        resultFace1, resultFace2 = extract_last_face(body)
+                        
+                        centerFaceFinal1 = extrac_face_center(resultFace1)
+                        centerFaceFinal2 = extrac_face_center(resultFace2)
+                        
+                        if (centerFaceFinal1 == centerFaceInicial1 and centerFaceFinal2 == centerFaceInicial2) or (centerFaceFinal1 == centerFaceInicial2 and centerFaceFinal2 == centerFaceInicial1):
+                            break
+                except Exception as e:
+                    print("Erro ao excluir a aresta: {}".format(e))
+    
+        return most_distant_edge
+    except Exception as e:
+        print("Erro ao encontrar a aresta: {}".format(e))
+        return None
+    
+# Função para criar um plano com base em duas arestas
+def create_plane_from_edges(edge1, edge2):   
+    try:
+        selection = Selection.Create(edge1,edge2)
+        result = DatumPlaneCreator.Create(selection, True, None)
+        # Converte coleção em datumplane
+        colectionPlane = result.GetCreated[DatumPlane]()
+        if not colectionPlane:
+            raise ValueError("Nenhum DatumPlane foi criado.")
+        
+        docPlane = colectionPlane[0]
+        if isinstance(docPlane, DatumPlane):
+            createPlane = docPlane
+        
+        return createPlane
+
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None, None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None, None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None, None
+    
+# Função para criar plano em relação a uma dereção e distancia em relação a uma face
+def create_plan_by_dist_and_direction(oBodyToConect, faceReference,planOffset):
+    try:
+        facedirection = normal_direction(faceReference.GetFaceNormal(0,0))
+        if facedirection in ["+X", "-X"]:
+            cut_plan1, cut_point1 = create_plane_from_face(faceReference, "+X",planOffset)
+            cut_plan2, cut_point2 = create_plane_from_face(faceReference, "-X",planOffset)
+        elif facedirection in ["+Y", "-Y"]:
+            cut_plan1, cut_point1 = create_plane_from_face(faceReference, "+Y",planOffset)
+            cut_plan2, cut_point2 = create_plane_from_face(faceReference, "-Y",planOffset)
+        elif facedirection in ["+Z", "-Z"]:
+            cut_plan1, cut_point1 = create_plane_from_face(faceReference, "+Z",planOffset)
+            cut_plan2, cut_point2 = create_plane_from_face(faceReference, "-Z",planOffset)
+
+        oBodyToConectCenter = center_body_point(oBodyToConect)
+
+        dist1 = dist_between_two_points(cut_point1, oBodyToConectCenter)
+        dist2 = dist_between_two_points(cut_point2, oBodyToConectCenter)
+
+        if dist1 > dist2:
+            cut_plan = cut_plan2
+            delete_cut_plan = cut_plan1 
+        else:
+            cut_plan = cut_plan1
+            delete_cut_plan = cut_plan2
+
+        selection1 = Selection.Create(delete_cut_plan)
+        result = Delete.Execute(selection1)
+        
+        return cut_plan
+    
+    except AttributeError as ae:
+        print("Ocorreu um erro ao acessar os atributos: {}".format(ae))
+        return None, None
+
+    except ValueError as ve:
+        print("Ocorreu um erro de valor: {}".format(ve))
+        return None, None
+
+    except Exception as e:
+        print("Ocorreu um erro ao dividir as faces: {}".format(e))
+        return None, None
+
+# Função extrai arestas 10 mm proximas a face
+def extract_edges_with_closest_distance(face, edge_list):
+    try:
+        matching_edges = []
+        for refEdge in edge_list:
+            refEdgeMidpoint = edge_midpoint(refEdge)
+            closest_edge = None
+            min_distance = float('inf')
+            
+            for edge in face.Edges:
+                edgeMidpoint = edge_midpoint(edge)
+                dist = dist_between_two_points(edgeMidpoint, refEdgeMidpoint)
+                
+                if dist < min_distance:
+                    min_distance = dist
+                    closest_edge = edge
+            
+            if closest_edge:
+                matching_edges.append(closest_edge)
+        
+        return matching_edges
+    except Exception as e:
+        print("Erro ao extrair as arestas com a distância mais próxima: {}".format(e))
+        return []
+  
+def get_non_sharing_edges(face):
+    try:
+        edges = list(face.Edges)
+        if len(edges) != 4:
+            raise ValueError("A face deve ter exatamente 4 arestas.")
+        
+        # Inicializar listas para armazenar as arestas que não compartilham vértices
+        list1 = []
+        list2 = []
+        
+        # Adicionar a primeira aresta à primeira lista
+        list1.append(edges[0])
+        
+        # Verificar as outras arestas
+        for edge in edges[1:]:
+            # Verificar se a aresta compartilha vértices com as arestas da primeira lista
+            shares_vertex = False
+            for e in list1:
+                vertices1 = extract_edge_vertex(e)
+                vertices2 = extract_edge_vertex(edge)
+                if any(v in vertices2 for v in vertices1):
+                    shares_vertex = True
+                    break
+            
+            # Adicionar a aresta à lista apropriada
+            if shares_vertex:
+                list2.append(edge)
+            else:
+                list1.append(edge)
+        
+        return list1, list2
+    except Exception as e:
+        print("Erro ao obter as arestas que não compartilham vértices: {}".format(e))
+        return None, None
+  
+  
+  
+  
+#Função Principal
+def main_function(selection):
+    try: 
+
+        extract = list(selection.GetItems[IDocObject]())
+        oLimitFace1 = extract[0]
+        
+        if isinstance(oLimitFace1, DesignFace):
+            oLimitFace1 = oLimitFace1  
+        else:
+            raise ValueError("O primeiro item selecionado não é uma DesignFace.")
+        oLimitFace2 = extract[1]
+        if isinstance(oLimitFace2, DesignFace):
+            oLimitFace2 = oLimitFace2
+        else:
+            raise ValueError("O segundo item selecionado não é uma DesignFace.")
+        
+        for extract_inst3 in extract[2:]:
+            if isinstance(extract_inst3, DesignFace):
+                oDesingFace = extract_inst3 
+                oBodyToConect = None
+                oBodyExtract = oDesingFace.Parent
+                if isinstance(oBodyExtract, DesignBody):
+                    oBodyToConect = oBodyExtract
+                    espessuraPrincipal = oBodyToConect.MidSurface.GetThickness()
+                   
+            if oBodyToConect is None:
+                raise ValueError("Nenhum DesignBody válido encontrado nos itens subsequentes.")
+
+            planOffset = 10
+            cut_plan1 = create_plan_by_dist_and_direction(oBodyToConect, oLimitFace1,planOffset)
+            cut_plan2 = create_plan_by_dist_and_direction(oBodyToConect, oLimitFace2,planOffset)
+            
+            #Divide o corpo
+            resultingBodies = cut_body_by_plan(oBodyToConect,cut_plan1)
+            resultingBodies = cut_body_by_plan(resultingBodies,cut_plan2)
+            
+            # Cria planos nas extremidades para primeiro corte
+            
+            faceSideList = create_close_body_faces(resultingBodies,True)
+            
+            if not faceSideList:
+                raise ValueError("Nenhuma face válida encontrada para criar planos de corte.")
+            
+            # Extrai a normal da face inicial
+            
+            oFaceSide1 = faceSideList[0]
+            oFaceSide2 = faceSideList[1]
+            
+            #Descobre qual face a ser cortada será usada no incio
+            oLimitFaceNew1 = find_near_close_face(oLimitFace1,oLimitFace2,oFaceSide1,True)
+            oLimitFaceNew2 = find_near_close_face(oLimitFace1,oLimitFace2,oFaceSide2,True)
+            oLimitBody1 = oLimitFaceNew1.Parent
+            oLimitBody2 = oLimitFaceNew2.Parent
+            
+            resultingBodiesEdges = resultingBodies.Edges
+            
+            resultingBodiesEdges = resultingBodiesEdges[-4:]
+            
+            sortedEdges = sort_edges(resultingBodiesEdges,False)
+
+            # Usando um conjunto para evitar duplicatas
+            uniqueCutFaces = set()
+            for oEdge in sortedEdges:
+                for face in oEdge.Faces:
+                    uniqueCutFaces.add(face)
+                    
+            # Convertendo de volta para uma lista, se necessário
+            listCutFaces = list(uniqueCutFaces)
+            disconnected_faces, connectedFace, widths = find_disconnected_and_connected_faces(listCutFaces)
+            
+            disconnectedFace1 = disconnected_faces[0]
+            disconnectedFace2 = disconnected_faces[1]
+            
+            edge1 = find_non_shared_edge(connectedFace, disconnectedFace1)
+            edge2 = find_non_shared_edge(connectedFace, disconnectedFace2)
+
+            createPlane = create_plane_from_edges(edge1,edge2)
+             
+            split_faces(oLimitFaceNew1,createPlane)
+            split_faces(oLimitFaceNew2,createPlane)
+           
+            extra_cut_first(oLimitBody1, oFaceSide1,connectedFace)
+            extra_cut_first(oLimitBody1, oFaceSide1,disconnectedFace1)
+            extra_cut_first(oLimitBody1, oFaceSide1,disconnectedFace2)
+            
+            extra_cut_first(oLimitBody2, oFaceSide2,connectedFace)
+            extra_cut_first(oLimitBody2, oFaceSide2,disconnectedFace1)
+            extra_cut_first(oLimitBody2, oFaceSide2,disconnectedFace2)
+            
+            faceBody1Face1, faceBody1Face2 = extract_last_face(oLimitBody1)
+            faceBody2Face1, faceBody2Face2 = extract_last_face(oLimitBody2)
+
+            #result = FixSplitEdges.FindAndFix()
+            
+            faceToConnect1 = find_near_close_face(faceBody1Face1,faceBody1Face2,oFaceSide1,True)    
+            faceToConnect2 = find_near_close_face(faceBody2Face1,faceBody2Face2,oFaceSide2,True)    
+            
+            faceNoConnect1 = find_near_close_face(faceBody1Face1,faceBody1Face2,oFaceSide1,False)    
+            faceNoConnect2 = find_near_close_face(faceBody2Face1,faceBody2Face2,oFaceSide2,False)   
+                
+            selection = Selection.Create(oFaceSide1,oFaceSide2)
+            result = Delete.Execute(selection)
+            
+            edgeList1, edgeList2 = create_close_body_faces(resultingBodies,False)
+            
+            edgeListToCopy1 = extract_edges_with_closest_distance(faceToConnect1, edgeList1)
+            edgeListToCopy2 = extract_edges_with_closest_distance(faceToConnect2, edgeList2)
+            
+            sortEdgeListToCopy1 =  sort_by_vertex_share(edgeListToCopy1)
+            sortEdgeListToCopy2 =  sort_by_vertex_share(edgeListToCopy2)
+            
+            selection1 = Selection.Create(sortEdgeListToCopy1)
+            pasted_selection1 = coy_and_paste_edges(selection1)
+            selection2 = Selection.Create(sortEdgeListToCopy2)
+            pasted_selection2 = coy_and_paste_edges(selection2)
+
+            body_from_loft = create_loft_from_pasted_edges(pasted_selection1,pasted_selection2)
+            
+            edgesToErase1 = faceToConnect1.Edges
+            edgesToErase2 = faceToConnect2.Edges
+            selection = Selection.Create(edgesToErase1)
+            result = Delete.Execute(selection)
+            selection = Selection.Create(edgesToErase2)
+            result = Delete.Execute(selection)
+            
+            
+            faceBody1Face1, faceBody1Face2 = extract_last_face(oLimitBody1)
+
+            edgesToErase = faceBody1Face1.Edges
+            selection = Selection.Create(edgesToErase)
+            result = Delete.Execute(selection)
+            
+            faceBody1Face1, faceBody1Face2 = extract_last_face(oLimitBody2)
+
+            edgesToErase = faceBody1Face1.Edges
+            selection = Selection.Create(edgesToErase)
+            result = Delete.Execute(selection)
+            
+            newBody, curves = search_last_body()
+
+            selection = Selection.Create(newBody)
+            options = SetColorOptions()
+            options.FaceColorTarget = FaceColorTarget.Body
+            ColorHelper.SetColor(selection, options, Color.FromArgb(255, 255, 0, 128))
+            
+            sc.MidSurfaceAspect.Create(newBody,espessuraPrincipal)
+            
+            selection = Selection.Create(curves)
+            result = Delete.Execute(selection)
+            selection = Selection.Create(cut_plan1,cut_plan2,edgeList1[0].Parent,createPlane)
+            result = Delete.Execute(selection)            
+            
+            oLimitFace1, faceBody1Face2 = extract_last_face(oLimitBody1)
+            oLimitFace2, faceBody2Face2 = extract_last_face(oLimitBody2)
+            
+    except Exception as e:
+        print("Erro ao executar função principal: {}".format(e))
+        
+
+#Executa Função
+selection = Selection.GetActive()
+inlist = selection.GetItems[IDocObject]()
+onlist = len(inlist)
+if onlist >= 2:
+    main_function(selection)
+else:
+    print("Erro: A seleção está vazia. Por favor, selecione ao menos 2 faces válidas.")
+
